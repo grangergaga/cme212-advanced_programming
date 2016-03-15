@@ -9,6 +9,9 @@
 #include <vector>
 #include <map>
 #include <cassert>
+#include <thrust/iterator/transform_iterator.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/functional.h>
 
 #include "CME212/Util.hpp"
 #include "CME212/Point.hpp"
@@ -21,8 +24,7 @@
  * most one edge between any pair of distinct nodes).
  */
 template <typename V, typename E> class Graph {
- public:
-
+public:
   //
   // PUBLIC TYPE DEFINITIONS
   //
@@ -66,6 +68,17 @@ template <typename V, typename E> class Graph {
       Graph::num_edges(), and argument type of Graph::node(size_type) */
   typedef unsigned size_type;
 
+
+private:
+   /** A vector of all nodes' positions, and the element's index is the node_id_. */
+   std::vector<std::pair<Point*, node_value_type>> nodes_;
+
+   /** A vector storing every node's connections. */
+   std::vector<std::vector<std::pair<size_type, edge_value_type>>> adjacency_;
+
+ public:
+
+
   //
   // CONSTRUCTORS AND DESTRUCTOR
   //
@@ -91,8 +104,18 @@ template <typename V, typename E> class Graph {
    * Node objects are used to access information about the Graph's nodes.
    */
   class Node: private totally_ordered <Node> {
+    private:
+      /** graph_ is a pointer to the Graph object where the node is located.
+       * node_id_ is the index of this node in the graph. */
+      Graph* graph_;
+      size_type node_id_;
 
-   public:
+      /** Construct a valid Node using graph and index */
+      Node(const Graph* graph, size_type node_id)
+          : graph_(const_cast<Graph*>(graph)), node_id_(node_id) {
+      }
+
+    public:
     /** Construct an invalid node.
      *
      * Valid nodes are obtained from the Graph class, but it
@@ -196,17 +219,6 @@ template <typename V, typename E> class Graph {
       incident_iterator ii = IncidentIterator(graph_, node_id_, incnum);
       return ii;
     }
-
-   private:
-     /** graph_ is a pointer to the Graph object where the node is located.
-      * node_id_ is the index of this node in the graph. */
-     Graph* graph_;
-     size_type node_id_;
-
-     /** Construct a valid Node using graph and index */
-     Node(const Graph* graph, size_type node_id)
-         : graph_(const_cast<Graph*>(graph)), node_id_(node_id) {
-     }
 
     // Allow Graph to access Node's private member data and functions.
     friend class Graph;
@@ -349,106 +361,105 @@ template <typename V, typename E> class Graph {
    * are considered equal if they connect the same nodes, in either order.
    */
   class Edge: private totally_ordered <Edge> {
-   public:
-    /** Construct an invalid Edge. */
-    Edge(){
+  private:
+    /** graph_ is a pointer to the Graph object where the edge is located.
+     * edge_id_ is the index of this edge in the graph. */
+    Graph* graph_;
+    size_type node1_id_;
+    size_type node2_vecid_;
+
+    /** Construct a valid edge */
+    Edge(const Graph* graph, size_type node1_id, size_type node2_vecid)
+        : graph_(const_cast<Graph*>(graph)), node1_id_(node1_id), node2_vecid_(node2_vecid){
     }
+  public:
+  /** Construct an invalid Edge. */
+  Edge(){
+  }
 
-    size_type Node2Id() const{
-      assert(this->graph_ != NULL);
-      return graph_->adjacency_[node1_id_][node2_vecid_].first;
-    }
+  size_type Node2Id() const{
+    assert(this->graph_ != NULL);
+    return graph_->adjacency_[node1_id_][node2_vecid_].first;
+  }
 
-    /** Return a node of this Edge */
-    Node node1() const {
-      assert(this->graph_ != NULL);
-      return Node(graph_, node1_id_);
-      return Node();
-    }
+  /** Return a node of this Edge */
+  Node node1() const {
+    assert(this->graph_ != NULL);
+    return Node(graph_, node1_id_);
+    return Node();
+  }
 
-    /** Return the other node of this Edge */
-    Node node2() const {
-      assert(this->graph_ != NULL);
-      return Node(graph_, Node2Id());
-      return Node();
-    }
+  /** Return the other node of this Edge */
+  Node node2() const {
+    assert(this->graph_ != NULL);
+    return Node(graph_, Node2Id());
+    return Node();
+  }
 
-    /** Test whether this edge and @a e are equal.
-     *
-     * Equal edges represent the same undirected edge between two nodes.
-     */
-    bool operator==(const Edge& e) const {
-      assert(e.graph_ != NULL and this->graph_ != NULL);
-      if(graph_ == e.graph_ and
-        ((node1_id_ == e.node1_id_ and Node2Id() == e.Node2Id()) or
-        (Node2Id() == e.node1_id_ and node1_id_ == e.Node2Id()))) return true;
-      return false;
-    }
+  /** Test whether this edge and @a e are equal.
+   *
+   * Equal edges represent the same undirected edge between two nodes.
+   */
+  bool operator==(const Edge& e) const {
+    assert(e.graph_ != NULL and this->graph_ != NULL);
+    if(graph_ == e.graph_ and
+      ((node1_id_ == e.node1_id_ and Node2Id() == e.Node2Id()) or
+      (Node2Id() == e.node1_id_ and node1_id_ == e.Node2Id()))) return true;
+    return false;
+  }
 
-    /** Test whether this edge is less than @a e in a global order.
-     * The order is according to the edge index.
-     * This ordering function is useful for STL containers such as
-     * std::map<>. It need not have any interpretive meaning.
-     */
-    bool operator<(const Edge& e) const {
-      assert(e.graph_ != NULL and this->graph_ != NULL);
-      size_type curmin = std::min(node1_id_, Node2Id());
-      size_type curmax = std::max(node1_id_, Node2Id());
-      size_type emin = std::min(e.node1_id_, e.Node2Id());
-      size_type emax = std::max(e.node1_id_, e.Node2Id());
-      if ((graph_ < e.graph_) or
-  			((graph_ == e.graph_) and ((curmin < emin) or
-  		   ((curmin == emin) and (curmax < emax))))) {
-  		  return true;
-  		}
-      return false;
-    }
+  /** Test whether this edge is less than @a e in a global order.
+   * The order is according to the edge index.
+   * This ordering function is useful for STL containers such as
+   * std::map<>. It need not have any interpretive meaning.
+   */
+  bool operator<(const Edge& e) const {
+    assert(e.graph_ != NULL and this->graph_ != NULL);
+    size_type curmin = std::min(node1_id_, Node2Id());
+    size_type curmax = std::max(node1_id_, Node2Id());
+    size_type emin = std::min(e.node1_id_, e.Node2Id());
+    size_type emax = std::max(e.node1_id_, e.Node2Id());
+    if ((graph_ < e.graph_) or
+  		((graph_ == e.graph_) and ((curmin < emin) or
+  	   ((curmin == emin) and (curmax < emax))))) {
+  	  return true;
+  	}
+    return false;
+  }
 
-    /** Non-const version of this edge's value,
-     *  get access and set value to it.
-     */
-    edge_value_type& value(){
-      assert(this->graph_ != NULL);
-      return (*graph_).adjacency_[node1_id_][node2_vecid_].second;
-    }
+  /** Non-const version of this edge's value,
+   *  get access and set value to it.
+   */
+  edge_value_type& value(){
+    assert(this->graph_ != NULL);
+    return (*graph_).adjacency_[node1_id_][node2_vecid_].second;
+  }
 
-    /** Const version of this edge's value,
-     *  only get access to it.
-     */
-     const edge_value_type& value() const{
-       assert(this->graph_ != NULL);
-       return (*graph_).adjacency_[node1_id_][node2_vecid_].second;
-     }
+  /** Const version of this edge's value,
+   *  only get access to it.
+   */
+   const edge_value_type& value() const{
+     assert(this->graph_ != NULL);
+     return (*graph_).adjacency_[node1_id_][node2_vecid_].second;
+   }
 
-    double length() const{
-      return norm(node1().position() - node2().position());
-    }
+  double length() const{
+    return norm(node1().position() - node2().position());
+  }
 
-    Edge dual() const{
-      size_type node2id = graph_->adjacency_[node1_id_][node2_vecid_].first;
-      size_type p = 0;
-      for(; p < graph_->adjacency_[node2id].size(); ++p){
-        if(graph_->adjacency_[node2id][p].first == node1_id_){
-          return Edge(graph_, node2id, p);
-        }
+  Edge dual() const{
+    size_type node2id = graph_->adjacency_[node1_id_][node2_vecid_].first;
+    size_type p = 0;
+    for(; p < graph_->adjacency_[node2id].size(); ++p){
+      if(graph_->adjacency_[node2id][p].first == node1_id_){
+        return Edge(graph_, node2id, p);
       }
-      return Edge();
     }
+    return Edge();
+  }
 
-   private:
-     /** graph_ is a pointer to the Graph object where the edge is located.
-      * edge_id_ is the index of this edge in the graph. */
-     Graph* graph_;
-     size_type node1_id_;
-     size_type node2_vecid_;
-
-     /** Construct a valid edge */
-     Edge(const Graph* graph, size_type node1_id, size_type node2_vecid)
-         : graph_(const_cast<Graph*>(graph)), node1_id_(node1_id), node2_vecid_(node2_vecid){
-     }
-
-    // Allow Graph to access Edge's private member data and functions.
-    friend class Graph;
+  // Allow Graph to access Edge's private member data and functions.
+  friend class Graph;
   };
 
   /** Return the total number of edges in the graph.
@@ -457,7 +468,7 @@ template <typename V, typename E> class Graph {
    */
   size_type num_edges() const {
     size_type numedges = 0;
-    for(auto &i : adjacency_){
+    for(auto i : adjacency_){
       numedges += i.size();
     }
     return numedges/2;
@@ -586,60 +597,30 @@ template <typename V, typename E> class Graph {
   // Node Iterator
   //
 
-  /** @class Graph::NodeIterator
+  /** The functor which takes the uid and returns the node with correspionding index */
+  struct whatnode : public thrust::unary_function<size_type, node_type>{
+    Graph* graph_;
+    whatnode(const Graph* graph) : graph_(const_cast<Graph*>(graph)) {}
+    node_type operator()(size_type i){
+      return graph_->node(i);
+    }
+  };
+  /** @struct Graph::NodeIterator
    * @brief Iterator class for nodes. A forward iterator. */
-  class NodeIterator: private totally_ordered <NodeIterator> {
-   public:
-    // These type definitions help us use STL's iterator_traits.
-    /** Element type. */
-    typedef Node value_type;
-    /** Type of pointers to elements. */
-    typedef Node* pointer;
-    /** Type of references to elements. */
-    typedef Node& reference;
-    /** Iterator category. */
-    typedef std::input_iterator_tag iterator_category;
-    /** Difference between iterators */
-    typedef std::ptrdiff_t difference_type;
-
-    /** Construct an invalid NodeIterator. */
-    NodeIterator() {
-    }
-
-    Node operator*() const {
-      return Node(graph_, nodeindex_);
-    }
-
-    node_iterator& operator++() {
-      nodeindex_ ++;
-      return *this;
-    }
-
-    bool operator==(const NodeIterator& ni) const {
-      return graph_ == ni.graph_ and nodeindex_ == ni.nodeindex_;
-    }
-
-   private:
-     /** Store the pointer to graph and the nodeindex to get access to the nodes
-      *  and iterate through.
-      */
-     Graph* graph_;
-     size_type nodeindex_;
-     NodeIterator(const Graph* graph, size_type nodeindex)
-      : graph_(const_cast<Graph*>(graph)), nodeindex_(nodeindex){}
-
-     friend class Graph;
-
+  struct NodeIterator : thrust::transform_iterator<whatnode, thrust::counting_iterator<size_type>, Node> {
+    using NodeIterator::transform_iterator::transform_iterator;
+    NodeIterator(const graph_type* g, size_type uid)
+      : NodeIterator::transform_iterator(thrust::make_counting_iterator(uid), whatnode(g)){}
   };
 
   // Iterator to first node.
-  node_iterator node_begin() const {
+  node_iterator node_begin(){
     node_iterator ni = NodeIterator(this, 0);
     return ni;
   }
 
   // Iterator to last node.
-  node_iterator node_end() const {
+  node_iterator node_end(){
     node_iterator ni = NodeIterator(this, size());
     return ni;
   }
@@ -651,6 +632,17 @@ template <typename V, typename E> class Graph {
   /** @class Graph::EdgeIterator
    * @brief Iterator class for edges. A forward iterator. */
   class EdgeIterator: private totally_ordered <EdgeIterator> {
+  private:
+    /** Store the pointer to graph and the edgeindex to get access to the edges
+     *  and iterate through.
+     */
+    Graph* graph_;
+    size_type center_;
+    size_type outid_;
+
+    /** Construct a valid EdgeIterator. */
+    EdgeIterator(const Graph* graph, size_type center, size_type outid)
+      : graph_(const_cast<Graph*>(graph)), center_(center), outid_(outid){}
    public:
     // These type definitions help us use STL's iterator_traits.
     /** Element type. */
@@ -696,17 +688,6 @@ template <typename V, typename E> class Graph {
       return;
     }
 
-   private:
-     /** Store the pointer to graph and the edgeindex to get access to the edges
-      *  and iterate through.
-      */
-     Graph* graph_;
-     size_type center_;
-     size_type outid_;
-
-     /** Construct a valid EdgeIterator. */
-     EdgeIterator(const Graph* graph, size_type center, size_type outid)
-       : graph_(const_cast<Graph*>(graph)), center_(center), outid_(outid){}
     friend class Graph;
   };
 
@@ -729,6 +710,19 @@ template <typename V, typename E> class Graph {
   /** @class Graph::IncidentIterator
    * @brief Iterator class for edges incident to a node. A forward iterator. */
   class IncidentIterator: private totally_ordered <IncidentIterator> {
+  private:
+   friend class Graph;
+
+   /** Store the node1_id and node2_id for the edge, where node1 is the
+    *  central node and node2 are the adjacent nodes to node1.
+    */
+   graph_type* graph_;
+   size_type center_;
+   size_type outid_;
+
+   /** Construct a valid IncidentIterator. */
+   IncidentIterator(const Graph* graph, size_type center, size_type outid)
+     : graph_(const_cast<Graph*>(graph)), center_(center), outid_(outid){};
    public:
     // These type definitions help us use STL's iterator_traits.
     /** Element type. */
@@ -761,29 +755,7 @@ template <typename V, typename E> class Graph {
       return (graph_ == ii.graph_ and center_ == ii.center_ and outid_ == ii.outid_);
     }
 
-   private:
-    friend class Graph;
-
-    /** Store the node1_id and node2_id for the edge, where node1 is the
-     *  central node and node2 are the adjacent nodes to node1.
-     */
-    graph_type* graph_;
-    size_type center_;
-    size_type outid_;
-
-    /** Construct a valid IncidentIterator. */
-    IncidentIterator(const Graph* graph, size_type center, size_type outid)
-      : graph_(const_cast<Graph*>(graph)), center_(center), outid_(outid){};
   };
-
- private:
-
-
-   /** A vector of all nodes' positions, and the element's index is the node_id_. */
-   std::vector<std::pair<Point*, node_value_type>> nodes_;
-
-   /** A vector storing every node's connections. */
-   std::vector<std::vector<std::pair<size_type, edge_value_type>>> adjacency_;
 
 };
 

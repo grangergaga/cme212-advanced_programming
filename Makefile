@@ -12,16 +12,17 @@ EXEC += test_nodes
 EXEC += test_edges
 EXEC += mtl_test
 EXEC += poisson
+EXEC += space_search_test
 
 # Get the shell name to determine the OS
 UNAME := $(shell uname)
 
 # Define the C++ compiler to use
 ifeq ($(UNAME), Linux)
-  CXX := clang++-3.5
+  CXX := g++ -fopenmp
 endif
 ifeq ($(UNAME), Darwin)
-  CXX := clang++
+  CXX := g++ -fopenmp
 endif
 
 # Dependency directory and flags
@@ -34,10 +35,11 @@ DEPSFLAGS = -MD -MF $(DEPSFILE) -MP
 
 # Define any directories containing header files
 #   To include directories use -Ipath/to/files
-INCLUDES += -I/path/to/MTL4	
-
+INCLUDES += -I/path/to/MTL4
+INCLUDES += -I./thrust 
 # Define CXX compile flags
 CXXFLAGS += -std=c++11 -O3 -funroll-loops -W -Wall -Wextra #-Wfatal-errors
+CXXFLAGS += -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_OMP
 
 # Define any directories containing libraries
 #   To include directories use -Lpath/to/files

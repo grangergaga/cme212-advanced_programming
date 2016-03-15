@@ -9,13 +9,17 @@
  */
 
 #include <fstream>
+#include <thrust/for_each.h>
+#include <thrust/system/omp/execution_policy.h>
 
 #include "CME212/SDLViewer.hpp"
 #include "CME212/Util.hpp"
 #include "CME212/Color.hpp"
 #include "CME212/Point.hpp"
+#include "CME212/BoundingBox.hpp"
 
 #include "Graph.hpp"
+#include "SpaceSearcher.hpp"
 
 
 
@@ -56,26 +60,47 @@ typedef typename GraphType::edge_type Edge;
  *           at time @a t.
  */
 
-/** Version with no constraints. */
-template <typename G, typename F>
-double symp_euler_step(G& g, double t, double dt, F force) {
-  // Compute the t+dt position
-  for (auto it = g.node_begin(); it != g.node_end(); ++it) {
-    auto n = *it;
+
+// Functor to update one node's position
+struct update_pos {
+  double dt_;
+  update_pos(double dt) : dt_(dt){}
+
+  __host__ __device__
+  void operator()(Node n){
     if (n.position() == Point(0, 0, 0) or n.position() == Point(1, 0, 0)){
       n.value().vel = Point(0, 0, 0);
     }
     // Update the position of the node according to its velocity
     // x^{n+1} = x^{n} + v^{n} * dt
-    n.position() += n.value().vel * dt;
+    n.position() += n.value().vel * dt_;
   }
-  // Compute the t+dt velocity
-  for (auto it = g.node_begin(); it != g.node_end(); ++it) {
-    auto n = *it;
-    // v^{n+1} = v^{n} + F(x^{n+1},t) * dt / m
-    n.value().vel += force(n, t) * (dt / n.value().mass);
-  }
+};
 
+// Functor to update one node's velocity
+template <typename F>
+struct update_vel {
+  F force_;
+  double t_;
+  double dt_;
+  update_vel(F& force, double t, double dt)
+    :force_(force), t_(t), dt_(dt){}
+
+  __host__ __device__
+  void operator()(Node n){
+    // v^{n+1} = v^{n} + F(x^{n+1},t) * dt / m
+    n.value().vel += force_(n, t_) * (dt_ / n.value().mass);
+  }
+};
+
+
+/** Version with no constraints. */
+template <typename G, typename F>
+double symp_euler_step(G& g, double t, double dt, F force) {
+  // Compute the t+dt position
+  thrust::for_each(thrust::omp::par, g.node_begin(), g.node_end(), update_pos(dt));
+  // Compute the t+dt velocity
+  thrust::for_each(thrust::omp::par, g.node_begin(), g.node_end(), update_vel<F>(force, t, dt));
   return t + dt;
 }
 
@@ -83,21 +108,10 @@ double symp_euler_step(G& g, double t, double dt, F force) {
 template <typename G, typename F, typename C>
 double symp_euler_step(G& g, double t, double dt, F force, C cons) {
   // Compute the t+dt position
-  for (auto it = g.node_begin(); it != g.node_end(); ++it) {
-    auto n = *it;
-    if (n.position() == Point(0, 0, 0) or n.position() == Point(1, 0, 0)){
-      n.value().vel = Point(0, 0, 0);
-    }
-    // Update the position of the node according to its velocity
-    // x^{n+1} = x^{n} + v^{n} * dt
-    n.position() += n.value().vel * dt;
-  }
+  thrust::for_each(thrust::omp::par, g.node_begin(), g.node_end(), update_pos(dt));
   // Compute the t+dt velocity
-  for (auto it = g.node_begin(); it != g.node_end(); ++it) {
-    auto n = *it;
-    // v^{n+1} = v^{n} + F(x^{n+1},t) * dt / m
-    n.value().vel += force(n, t) * (dt / n.value().mass);
-  }
+  thrust::for_each(thrust::omp::par, g.node_begin(), g.node_end(), update_vel<F>(force, t, dt));
+  // Apply the constraint functor on the graph
   cons(g);
   return t + dt;
 }
@@ -265,6 +279,79 @@ struct SphereConstraint {
   }
 };
 
+struct modifyvel{
+  Point c_;
+  double r2_;
+  Node n_;
+  modifyvel(Point c, double r2, Node n1) : c_(c), r2_(r2), n_(n1) {}
+  void operator()(Node n){
+    Point r = c_ - n.position();
+    double l2 = normSq(r);
+    if(n != n_ and l2 < r2_){
+      n_.value().vel -= (dot(r, n_.value().vel) / l2) * r;
+    }
+  }
+};
+
+struct checkcollision {
+  SpaceSearcher<Node> searcher_;
+  checkcollision(const SpaceSearcher<Node>& searcher) : searcher_(searcher) {}
+  void operator()(Node n){
+    Point center = n.position();
+    double radius2 = std::numeric_limits<double>::max();
+    for(auto i = n.edge_begin(); i != n.edge_end(); ++i){
+      auto e = *i;
+      radius2 = std::min(radius2, normSq(e.node2().position() - center));
+    }
+    radius2 *= 0.9;
+
+    // Form a bounding box that encapsulates the constraint’s influence
+    // Add some relaxing space for the box via multiplying the radius by 2
+    double radius = std::sqrt(radius2);
+    Point p1 = center - 2 * Point(radius, radius, radius);
+    Point p2 = center + 2 * Point(radius, radius, radius);
+    Box3D bb(p1, p2);
+    // Using SpaceSeacher to iterate in the given box.
+    // Note that the NeighborhoodIterator is not a random access iterator so we don't use parallel methods
+    thrust::for_each(searcher_.begin(bb), searcher_.end(bb), modifyvel(center, radius2, n));
+  }
+};
+
+struct SelfCollisionConstraint {
+  SpaceSearcher<Node> searcher_;
+  SelfCollisionConstraint(SpaceSearcher<Node> searcher) : searcher_(searcher) {}
+  void operator()(GraphType& g){
+    // Implement the first for-loop using thrust::for_each
+    // Iterate through all nodes using NodeIterator
+    thrust::for_each(thrust::omp::par, g.node_begin(), g.node_end(), checkcollision(searcher_));
+  }
+};
+
+
+struct SelfCollisionTest {
+  void operator()(GraphType& g) const {
+    for(auto i = g.node_begin(); i != g.node_end(); ++i){
+      auto n = *i;
+      const Point & center = n.position();
+      double radius2 = std::numeric_limits<double>::max();
+      for(auto j = n.edge_begin(); j != n.edge_end(); ++j){
+        auto e = *j;
+        radius2 = std::min(radius2, normSq(e.node2().position() - center));
+      }
+      radius2 *= 0.9;
+      for(auto k = g.node_begin(); k != g.node_end(); ++k){
+        auto n2 = *k;
+        Point r = center - n2.position();
+        double l2 = normSq(r);
+        if (n != n2 && l2 < radius2) {
+          // Remove our velocity component in r
+          n.value().vel -= (dot(r, n.value().vel) / l2) * r ;
+        }
+      }
+    }
+  }
+};
+
 /** The functor to remove nodes which violate the constraint. */
 struct SphereRemove {
   Point c = Point(0.5, 0.5, -0.5);
@@ -285,7 +372,6 @@ struct SphereRemove {
     return;
   }
 };
-
 
 int main(int argc, char** argv) {
   // Check arguments
@@ -324,15 +410,15 @@ int main(int argc, char** argv) {
   // Initialize the node values: mass and velocity.
   for(auto i = graph.node_begin(); i != graph.node_end(); ++i){
     (*i).value().vel = Point(0, 0, 0);
-    (*i).value().mass = 1.0 / (double)graph.num_nodes();
+    (*i).value().mass = (1.0 / (double)graph.num_nodes())/graph.num_nodes();
   }
 
   // Initialize the edge values: K and L.
   for(auto i = graph.edge_begin(); i != graph.edge_end(); ++i){
     auto e = *i;
     auto edual = e.dual();
-    e.value().K = 100;
-    edual.value().K = 100;
+    e.value().K = 100.0/graph.num_nodes();
+    edual.value().K = 100.0/graph.num_nodes();
     e.value().L = e.length();
     edual.value().L = edual.length();
   }
@@ -354,7 +440,7 @@ int main(int argc, char** argv) {
   viewer.center_view();
 
   // Begin the mass-spring simulation
-  double dt = 0.001;
+  double dt = 1.0/graph.num_nodes();
   double t_start = 0;
   double t_end = 5.0;
 
@@ -363,8 +449,13 @@ int main(int argc, char** argv) {
     //symp_euler_step(graph, t, dt, Problem1Force(K, L));
     //symp_euler_step(graph, t, dt, Problem2Force());
     //symp_euler_step(graph, t, dt, make_combined_force<GravityForce, MassSpringForce, ZeroForce>(GravityForce(), MassSpringForce()));
-    auto force = make_combined_force<GravityForce, MassSpringForce, DampingForce>(GravityForce(), MassSpringForce(), DampingForce(1.0/graph.size()));
-    symp_euler_step(graph, t, dt, force, SphereRemove());
+    auto force = make_combined_force<GravityForce, MassSpringForce, ZeroForce>(GravityForce(), MassSpringForce());
+
+    Box3D bigbb(Point(-5,-5,-5), Point(5,5,5));
+    auto n2p = [](const Node& n) { return n.position(); };
+    SpaceSearcher<Node> searcher(bigbb, graph.node_begin(), graph.node_end(), n2p);
+
+    symp_euler_step(graph, t, dt, force, SelfCollisionConstraint(searcher));
     // Update viewer with nodes' new positions
     viewer.clear();
     node_map.clear();
